@@ -1,0 +1,8 @@
+# 환경변수 파일 
+.env
+
+# 크롤링 결과 파일
+page_content.html
+
+# Python 캐시
+__pycache__/

@@ -1,0 +1,17 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+pydantic[email]
+playwright
+python-dotenv
+pytz
+psycopg2-binary
+
+# 라이브러리 설명
+# FastAPI: 파이썬으로 API 서버를 웹 프레임워크
+# uvicorn: FastAPI와 같은 애플리케이션을 실행하기 위한 웹 서버
+# SQLAlchemy: 파이썬 코드로 데이터베이스를 쉽게 다룰 수 있게 해주는 라이브러리
+# pydantic: 파이썬 타입 힌트를 이용해 데이터 유효성을 검사하고 설정을 관리하는 라이브러리
+# playwright: 웹 스크래핑 라이브러리
+# python-dotenv: .env 파일에 정의된 환경 변수를 코드 내로 불러오는 라이브러리
+# psycopg2-binary: PostgreSQL 드라이버

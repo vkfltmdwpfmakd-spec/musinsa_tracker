@@ -1,0 +1,26 @@
+services:
+  api:
+    build: .
+    container_name: musinsa_api
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./app:/code/app
+    depends_on:
+      - db
+    environment:
+      - DATABASE_URL=postgresql://user:password@db:5432/musinsa_db
+  db:
+    image: postgres:14
+    container_name: musinsa_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    environment:
+      - POSTGRES_USER=${DB_USER:-user}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-password}
+      - POSTGRES_DB=${DB_NAME:-musinsa_db}
+
+volumes:
+  postgres_data:
