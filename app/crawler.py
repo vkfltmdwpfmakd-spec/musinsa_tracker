@@ -88,28 +88,23 @@ async def extract_data_from_script_tag(page) -> Optional[Dict[str, Any]]:
                         elif image_url.startswith("/"):
                             image_url = "https://image.msscdn.net" + image_url
 
-                        # 추출한 데이터를 딕셔너리 형태로 반환
+                        # 추출한 데이터를 딕셔너리 형태로 반환 (가격정보는 별도 처리)
                         return {
                             "product_name": product_name,
                             "goods_no": goods_no,
-                            "style_no": style_no,
                             "brand": brand,
                             "brand_english": brand_english,
-                            "category": category_full,
-                            "category_depth1": category_depth1,
-                            "category_depth2": category_depth2,
-                            "category_depth3": category_depth3,
+                            "category": category_depth1,  # 1단계 카테고리만 사용
                             "image_url": image_url,
+                            "review_count": review_count,
+                            "review_score": review_score,
+                            # 가격 정보는 price_history 테이블용
                             "normal_price": normal_price,
                             "sale_price": sale_price,
                             "discount_rate": discount_rate,
                             "is_sale": is_sale,
                             "is_sold_out": is_sold_out,
-                            "review_count": review_count,
-                            "review_score": review_score,
-                            "delivery_info": delivery_info,
-                            "courier_name": courier_name,
-                            "gender": gender
+                            "stock_status": "품절" if is_sold_out else "판매중"
                         }
     except Exception as e:
         logger.warning(f"오류: Script 태그 JSON 파싱 중 문제가 발생했습니다: {e}")
@@ -140,13 +135,9 @@ async def fetch_product_data(url: str) -> Optional[Dict[str, Any]]:
             # 추출한 데이터를 각 변수에 할당
             product_name = json_data.get("product_name")
             goods_no = json_data.get("goods_no")
-            style_no = json_data.get("style_no")
             brand = json_data.get("brand")
             brand_english = json_data.get("brand_english")
             category = json_data.get("category")
-            category_depth1 = json_data.get("category_depth1")
-            category_depth2 = json_data.get("category_depth2")
-            category_depth3 = json_data.get("category_depth3")
             image_url = json_data.get("image_url")
             normal_price = json_data.get("normal_price", 0.0)
             sale_price = json_data.get("sale_price", 0.0)
@@ -155,41 +146,33 @@ async def fetch_product_data(url: str) -> Optional[Dict[str, Any]]:
             is_sold_out = json_data.get("is_sold_out", False)
             review_count = json_data.get("review_count", 0)
             review_score = json_data.get("review_score", 0.0)
-            delivery_info = json_data.get("delivery_info")
-            courier_name = json_data.get("courier_name")
-            gender = json_data.get("gender")
+            stock_status = json_data.get("stock_status")
 
-            # 재고 상태 문자열 생성
-            stock_status = "품절" if is_sold_out else "판매중"
+            # 재고 상태가 없으면 is_sold_out으로 판단
+            if not stock_status:
+                stock_status = "품절" if is_sold_out else "판매중"
 
             await browser.close()
             logger.info("크롤링 완료")
 
-            # 최종 결과를 딕셔너리 형태로 정리 (확장된 데이터 포함)
+            # 최종 결과를 딕셔너리 형태로 정리 (DB schema에 맞춰)
             result = {
+                # Product 테이블 필드들
                 "product_name": product_name,
                 "goods_no": goods_no,
-                "style_no": style_no,
                 "brand": brand or "알 수 없음",
-                "brand_english": brand_english or "",
+                "brand_english": brand_english,
                 "category": category or "기타",
-                "category_depth1": category_depth1 or "",
-                "category_depth2": category_depth2 or "",
-                "category_depth3": category_depth3 or "",
                 "product_url": url,
                 "image_url": image_url,
-                "normal_price": normal_price,
-                "sale_price": sale_price,
-                "discount_rate": discount_rate,
-                "is_sale": is_sale,
-                "stock_status": stock_status,
-                "is_sold_out": is_sold_out,
                 "review_count": review_count,
                 "review_score": review_score,
-                "delivery_info": delivery_info or "",
-                "courier_name": courier_name or "",
-                "gender": gender or "공용",
-                "is_active": True  # 추적 활성화 상태 (기본값 True)
+                "is_active": True,
+                # Price History 테이블용 필드들
+                "sale_price": sale_price,
+                "discount_rate": discount_rate,
+                "stock_status": stock_status,
+                "is_sold_out": is_sold_out
             }
             logger.info(f"크롤링 결과: {result}")
             return result

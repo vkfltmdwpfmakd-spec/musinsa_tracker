@@ -3,6 +3,8 @@
 
 # 크롤링 결과 파일
 page_content.html
+musinsa_category_content.html
+debug_category.html
 
 # Python 캐시
 __pycache__/

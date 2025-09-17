@@ -1,6 +1,6 @@
 from pydantic import BaseModel, HttpUrl
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 
 # 가격 이력 관련 스키마
@@ -9,6 +9,8 @@ class PriceHistoryBase(BaseModel):
     """가격 이력의 기본 필드를 정의하는 스키마"""
     price: float
     discount_price: float
+    discount_rate: float
+    stock_status: Optional[str] = None
     is_sold_out: bool
 
 class PriceHistoryCreate(PriceHistoryBase):
@@ -18,6 +20,7 @@ class PriceHistoryCreate(PriceHistoryBase):
 class PriceHistory(PriceHistoryBase):
     """API 응답으로 가격 이력 정보를 반환할 때 사용하는 스키마"""
     id: int
+    product_id: int
     crawled_at: datetime
 
     class Config:
@@ -25,10 +28,20 @@ class PriceHistory(PriceHistoryBase):
         from_attributes = True
 
 
-#  상품 관련 스키마 
+#  상품 관련 스키마
 class ProductBase(BaseModel):
     """상품의 기본 필드를 정의하는 스키마"""
     product_url: HttpUrl
+    product_name: Optional[str] = None
+    goods_no: Optional[int] = None
+    brand: Optional[str] = None
+    brand_english: Optional[str] = None
+    category: Optional[str] = None
+    category_depth1: Optional[str] = None
+    image_url: Optional[str] = None
+    review_count: Optional[int] = 0
+    review_score: Optional[float] = 0.0
+    is_active: Optional[bool] = True
 
 class ProductCreate(ProductBase):
     """새로운 상품을 등록 할 때 사용하는 스키마"""
