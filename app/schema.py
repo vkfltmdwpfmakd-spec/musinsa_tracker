@@ -7,10 +7,9 @@ from typing import List, Optional
 
 class PriceHistoryBase(BaseModel):
     """가격 이력의 기본 필드를 정의하는 스키마"""
-    price: float
-    discount_price: float
+    normal_price: float
+    sale_price: float
     discount_rate: float
-    stock_status: Optional[str] = None
     is_sold_out: bool
 
 class PriceHistoryCreate(PriceHistoryBase):
@@ -37,7 +36,6 @@ class ProductBase(BaseModel):
     brand: Optional[str] = None
     brand_english: Optional[str] = None
     category: Optional[str] = None
-    category_depth1: Optional[str] = None
     image_url: Optional[str] = None
     review_count: Optional[int] = 0
     review_score: Optional[float] = 0.0

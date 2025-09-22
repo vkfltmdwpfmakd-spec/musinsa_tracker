@@ -1,17 +1,43 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from sqlalchemy.orm import Session
 from typing import List
+from datetime import timedelta
 from .database import engine, get_db
-from .crawler import fetch_product_data 
-from .category_crawler import fetch_category_products, fetch_multiple_categories, MUSINSA_CATEGORIES
+from .auth import get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
+from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
+from .services import (
+    create_product_from_url,
+    crawl_and_save_multiple_categories,
+    update_product_prices,
+    manual_crawl_product
+)
+from .category_crawler import MUSINSA_CATEGORIES
 from . import models, schema
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 
 
 
 models.Base.metadata.create_all(bind=engine)
 
-app = FastAPI()
+app = FastAPI(title="무신사 가격 트래커 API", version="1.0.0")
+
+# Rate Limiter 설정
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# 앱 시작 시 스케줄러 시작
+@app.on_event("startup")
+async def startup_event():
+    start_scheduler()
+
+# 앱 종료 시 스케줄러 중지
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_scheduler()
 
 
 @app.get("/")
@@ -20,65 +46,54 @@ def read_root():
     return {"Hello": "World"}
 
 
+# 인증 관련 엔드포인트
+@app.post("/auth/token")
+async def login_for_access_token(username: str = "admin", password: str = "password"):
+    """JWT 토큰 발급 (개발용 - 실제로는 사용자 DB 연동 필요)"""
+    # 실제 환경에서는 사용자 DB에서 검증해야 함
+    if username == "admin" and password == "password":
+        access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        access_token = create_access_token(
+            data={"sub": username}, expires_delta=access_token_expires
+        )
+        return {
+            "access_token": access_token,
+            "token_type": "bearer",
+            "expires_in": ACCESS_TOKEN_EXPIRE_MINUTES * 60
+        }
+    else:
+        raise HTTPException(
+            status_code=401,
+            detail="잘못된 사용자명 또는 비밀번호입니다",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+
+# 스케줄러 관리 엔드포인트
+@app.get("/scheduler/status")
+@limiter.limit("10/minute")
+async def get_scheduler_info(request: Request, current_user: str = Depends(get_current_user)):
+    """스케줄러 상태 및 작업 목록 조회"""
+    return get_scheduler_status()
+
+
 @app.post("/products/", response_model=schema.Product)
-async def create_product(product_url: str, db: Session = Depends(get_db)):
+@limiter.limit("5/minute")
+async def create_product(
+    request: Request,
+    product_url: str,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user)
+):
     """새로운 상품을 등록하고 크롤링해서 DB에 저장"""
-
-    # 이미 등록된 URL인지 확인
-    existing_product = db.query(models.Product).filter(
-        models.Product.product_url == product_url
-    ).first()
-
-    if existing_product:
-        raise HTTPException(
-            status_code = 400,
-            detail = "이미 등록된 상품입니다."
-        )
-    
-
-    # 크롤링 실행
-    crawled_data = await fetch_product_data(product_url)
-
-    if not crawled_data:
-        raise HTTPException(
-            status_code = 400,
-            detail = "크롤링 중 오류가 발생했습니다."
-        )
-    
-
-    # 상품 기본 정보 (가격 제외)
-    product_data = {
-        'product_name': crawled_data['product_name'],
-        'goods_no': crawled_data.get('goods_no'),
-        'brand': crawled_data['brand'],
-        'brand_english': crawled_data.get('brand_english'),
-        'category': crawled_data.get('category'),
-        'product_url': crawled_data['product_url'],
-        'image_url': crawled_data['image_url'],
-        'review_count': crawled_data.get('review_count', 0),
-        'review_score': crawled_data.get('review_score', 0.0),
-        'is_active': crawled_data.get('is_active', True)
-    }
-
-    # 상품 저장
-    db_product = models.Product(**product_data)
-    db.add(db_product)
-    db.flush()  # ID 생성을 위해 flush
-
-    # 가격 정보는 price_history에 저장
-    price_history = models.PriceHistory(
-        product_id=db_product.id,
-        price=crawled_data.get('sale_price', 0),
-        discount_price=crawled_data.get('sale_price', 0),
-        discount_rate=crawled_data.get('discount_rate', 0),
-        stock_status=crawled_data.get('stock_status', '재고 확인 필요'),
-        is_sold_out=crawled_data.get('is_sold_out', False)
-    )
-    db.add(price_history)
-    db.commit()
-    db.refresh(db_product)
-
-    return db_product
+    try:
+        # services.py의 비즈니스 로직 사용
+        db_product = await create_product_from_url(product_url, db)
+        return db_product
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
 @app.get("/products/", response_model=List[schema.Product])
 async def get_products(skip: int = 0, limit: int = 100, db: Session = Depends(get_db)):
@@ -122,58 +137,56 @@ async def delete_product(product_id: int, db: Session = Depends(get_db)):
     
 
 @app.post("/products/{product_id}/crawl")
-async def manual_crawl(product_id: int, db: Session = Depends(get_db)):
+@limiter.limit("10/minute")
+async def manual_crawl(
+    request: Request,
+    product_id: int,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user)
+):
     """수동으로 상품 크롤링 실행"""
+    try:
+        # services.py의 비즈니스 로직 사용
+        result = await manual_crawl_product(product_id, db)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
-    # 상품 존재 여부 확인
-    product = db.query(models.Product).filter(
-        models.Product.id == product_id
-        ).first()
-    
-    if not product:
-        raise HTTPException(
-            status_code = 404,
-            detail = "상품을 찾을 수 없습니다."
+
+@app.post("/crawl/categories")
+@limiter.limit("3/minute")
+async def crawl_multiple_categories_endpoint(
+    request: Request,
+    category_codes: List[str],
+    target_count: int = 300,
+    save_to_db: bool = True,
+    db: Session = Depends(get_db),
+    current_user: str = Depends(get_current_user)
+):
+    """여러 카테고리 상품 크롤링"""
+    try:
+        # services.py의 비즈니스 로직 사용
+        result = await crawl_and_save_multiple_categories(
+            category_codes=category_codes,
+            target_count=target_count,
+            save_to_db=save_to_db,
+            db=db
         )
-    
-    # 크롤링 실행
-    crawled_data = await fetch_product_data(product.product_url)
-
-    if not crawled_data:
-        raise HTTPException(
-            status_code = 400,
-            detail = "크롤링 중 오류가 발생했습니다."
-        )
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"서버 오류: {str(e)}")
 
 
-    # 상품정보 업데이트
-    for key, value in crawled_data.items():
-        if hasattr(product, key):
-            setattr(product, key, value)
-    
-
-    # 가격 이력 저장
-    price_history = models.PriceHistory(
-        product_id = product.id,
-        price = crawled_data['sale_price'],
-        discount_price=crawled_data['sale_price'],
-        discount_rate=crawled_data['discount_rate'],
-        stock_status=crawled_data['stock_status'],
-        is_sold_out=crawled_data['is_sold_out']
-    )
-    
-    db.add(price_history)
-    db.commit()
-    db.refresh(price_history)
-
+@app.get("/categories")
+async def get_categories():
+    """지원하는 카테고리 목록 조회"""
     return {
-        "message": "크롤링 완료",
-        "product_info": {
-            "name": crawled_data['product_name'],
-            "price": crawled_data['sale_price'],
-            "stock_status": crawled_data['stock_status']
-        },
-        "price_history_id": price_history.id
+        "categories": MUSINSA_CATEGORIES,
+        "total_count": len(MUSINSA_CATEGORIES)
     }
 
 
@@ -186,196 +199,14 @@ async def get_price_history(product_id: int, db: Session = Depends(get_db)):
 
     if not product:
         raise HTTPException(
-            status_code = 404,
-            detail = "상품을 찾을 수 없습니다."
+            status_code=404,
+            detail="상품을 찾을 수 없습니다."
         )
-    
+
     price_history = db.query(models.PriceHistory).filter(
         models.PriceHistory.product_id == product_id
     ).order_by(models.PriceHistory.crawled_at.desc()).all()
 
     return price_history
-
-
-@app.get("/categories")
-async def get_categories():
-    """무신사 카테고리 목록 조회"""
-
-    return {
-        "categories": MUSINSA_CATEGORIES,
-        "total_count": len(MUSINSA_CATEGORIES)
-    }
-
-@app.post("/crawl/categories/{category_code}")
-async def crawl_category(category_code: str, target_count: int = 300, save_to_db: bool = True, db: Session = Depends(get_db)):
-    """특정 카테고리 상품 크롤링"""
-    if category_code not in MUSINSA_CATEGORIES.values():
-        raise HTTPException(
-            status_code = 400,
-            detail = f"유효하지 않은 카테고리 코드입니다. 지원 카테고리 : {list(MUSINSA_CATEGORIES.values())}"
-        )
-
-    try:
-        products_data = await fetch_category_products(category_code, target_count)
-        
-        saved_products = []
-        skipped_products = []
-
-        if save_to_db:
-            for product_data in products_data:
-                # 이미 등록된 URL인지 확인
-                existing_product = db.query(models.Product).filter(
-                    models.Product.product_url == product_data['product_url']
-                ).first()
-
-                if existing_product:
-                    skipped_products.append(product_data['product_url'])
-                    continue
-
-                # 상품 기본 정보 (가격 제외)
-                db_product_data = {
-                    'product_name': product_data['product_name'],
-                    'goods_no': product_data.get('goods_no'),
-                    'brand': product_data['brand'],
-                    'brand_english': product_data.get('brand_english'),
-                    'category': product_data.get('category'),
-                    'category_depth1': product_data.get('category'),  # 1단계는 카테고리명과 동일
-                    'product_url': product_data['product_url'],
-                    'image_url': product_data['image_url'],
-                    'review_count': product_data.get('review_count', 0),
-                    'review_score': product_data.get('review_score', 0.0)
-                }
-
-                db_product = models.Product(**db_product_data)
-                db.add(db_product)
-                db.flush()  # ID 생성을 위해 flush
-
-                # 가격 정보는 price_history에 저장
-                price_history = models.PriceHistory(
-                    product_id=db_product.id,
-                    price=product_data.get('sale_price', 0),
-                    discount_price=product_data.get('sale_price', 0),
-                    discount_rate=product_data.get('discount_rate', 0),
-                    stock_status="재고 확인 필요",
-                    is_sold_out=False
-                )
-                db.add(price_history)
-                saved_products.append(product_data['product_name'])
-
-            db.commit()
-
-        return {
-            "message": f"카테고리 {category_code} 크롤링 완료",
-            "crawled_count": len(products_data),
-            "saved_count": len(saved_products),
-            "skipped_count": len(skipped_products),
-            "products": products_data if not save_to_db else saved_products
-        }
-    
-    except Exception as e:
-        raise HTTPException(
-            status_code = 500,
-            detail = f"크롤링 중 오류가 발생했습니다: {e}"
-        )
-    
-
-@app.post("/crawl/categories")
-async def crawl_multiple_categories(category_codes: List[str], target_count: int = 300, save_to_db: bool = True, db: Session = Depends(get_db)):
-    """여러 카테고리 상품 크롤링 """
-
-    # 유효한 카테고리 코드 확인
-    invalid_codes = [code for code in category_codes if code not in MUSINSA_CATEGORIES.values()]
-    if invalid_codes:
-        raise HTTPException(
-            status_code = 400,
-            detail = f"유효하지 않은 카테고리 코드입니다. {invalid_codes}"
-        )
-
-    try:
-        results = await fetch_multiple_categories(category_codes, target_count)
-
-        total_crawled = 0
-        total_saved = 0
-        total_skipped = 0
-        category_results = {}
-
-        if save_to_db:
-            for category_code, products_data in results.items():
-                saved_products = []
-                skipped_products = []
-
-                for product_data in products_data:
-                    # 이미 등록된 URL인지 확인
-                    existing_product = db.query(models.Product).filter(
-                        models.Product.product_url == product_data['product_url']
-                    ).first()
-
-                    if existing_product:
-                        skipped_products.append(product_data['product_url'])
-                        continue
-
-                    # 상품 기본 정보 (가격 제외)
-                    db_product_data = {
-                        'product_name': product_data['product_name'],
-                        'goods_no': product_data.get('goods_no'),
-                        'brand': product_data['brand'],
-                        'brand_english': product_data.get('brand_english'),
-                        'category': product_data.get('category'),
-                        'category_depth1': product_data.get('category'),  # 1단계는 카테고리명과 동일
-                        'product_url': product_data['product_url'],
-                        'image_url': product_data['image_url'],
-                        'review_count': product_data.get('review_count', 0),
-                        'review_score': product_data.get('review_score', 0.0)
-                    }
-
-                    db_product = models.Product(**db_product_data)
-                    db.add(db_product)
-                    db.flush()  # ID 생성을 위해 flush
-
-                    # 가격 정보는 price_history에 저장
-                    price_history = models.PriceHistory(
-                        product_id=db_product.id,
-                        price=product_data.get('sale_price', 0),
-                        discount_price=product_data.get('sale_price', 0),
-                        discount_rate=product_data.get('discount_rate', 0),
-                        stock_status="재고 확인 필요",
-                        is_sold_out=False
-                    )
-                    db.add(price_history)
-                    saved_products.append(product_data['product_name'])
-
-                category_results[category_code] = {
-                    'crawled_count': len(products_data),
-                    'saved_count': len(saved_products),
-                    'skipped_count': len(skipped_products)
-                }
-
-                total_crawled += len(products_data)
-                total_saved += len(saved_products)
-                total_skipped += len(skipped_products)
-
-            db.commit()
-        else:
-            for category_code, products_data in results.items():
-                category_results[category_code] = {
-                    'crawled_count': len(products_data),
-                    'products': products_data
-                }
-
-                total_crawled += len(products_data)
-        
-        return {
-            "message": f"{len(category_codes)}개 카테고리 크롤링 완료",
-            "total_crawled": total_crawled,
-            "total_saved": total_saved,
-            "total_skipped": total_skipped,
-            "category_results": category_results
-        }
-    
-    except Exception as e:
-        raise HTTPException(
-            status_code = 500,
-            detail = f"크롤링 중 오류가 발생했습니다: {e}"
-        )
 
 

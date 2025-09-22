@@ -6,6 +6,10 @@ playwright
 python-dotenv
 pytz
 psycopg2-binary
+python-jose[cryptography]
+passlib[bcrypt]
+apscheduler
+slowapi
 
 # 라이브러리 설명
 # FastAPI: 파이썬으로 API 서버를 웹 프레임워크
@@ -14,4 +18,9 @@ psycopg2-binary
 # pydantic: 파이썬 타입 힌트를 이용해 데이터 유효성을 검사하고 설정을 관리하는 라이브러리
 # playwright: 웹 스크래핑 라이브러리
 # python-dotenv: .env 파일에 정의된 환경 변수를 코드 내로 불러오는 라이브러리
+# pytz: 한국 시간대(KST) 처리를 위한 시간대 라이브러리
 # psycopg2-binary: PostgreSQL 드라이버
+# python-jose: JWT 토큰 생성 및 검증을 위한 라이브러리
+# passlib: 패스워드 해싱 및 검증 라이브러리
+# apscheduler: 스케줄링 작업(크론잡)을 위한 라이브러리
+# slowapi: FastAPI용 Rate Limiting(요청 제한) 라이브러리

@@ -96,15 +96,13 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
             processed_urls = set()  # 중복 제거용
 
             while len(products) < target_count and scroll_count < max_scrolls:
-                # 현재 페이지의 모든 상품 수집
-                product_elements = await page.query_selector_all("div.sc-ibashp")
-                logger.info(f"스크롤 {scroll_count}: {len(product_elements)}개 상품 발견")
+                # 현재 페이지의 모든 상품 링크 직접 수집
+                product_links = await page.query_selector_all("a.gtm-select-item")
+                logger.info(f"스크롤 {scroll_count}: {len(product_links)}개 상품 발견")
 
                 # 상품 정보 추출
-                for item_element in product_elements:
+                for link_element in product_links:
                     try:
-                        # 상품 링크 추출
-                        link_element = await item_element.query_selector("a.sc-dFVmKS.eFRaTB.gtm-view-item-list.gtm-select-item")
                         if not link_element:
                             continue
 
@@ -128,11 +126,9 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                         elif original_price == 0:
                             original_price = sale_price
 
-                        # 상품명 추출
-                        img_element = await item_element.query_selector("img")
+                        # 상품명과 이미지 URL 추출
+                        img_element = await link_element.query_selector("img")
                         product_name = await img_element.get_attribute("alt") if img_element else "Unknown"
-
-                        # 이미지 URL 추출
                         image_url = await img_element.get_attribute("src") if img_element else None
 
                         # 리뷰 정보 크롤링
@@ -141,7 +137,7 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
 
                         try:
                             # 리뷰 개수 (괄호 있는 요소)
-                            review_count_element = await item_element.query_selector("span.text-etc_11px_reg.text-yellow.font-pretendard")
+                            review_count_element = await link_element.query_selector("span.text-etc_11px_reg.text-yellow.font-pretendard")
                             if review_count_element:
                                 review_text = await review_count_element.text_content()
                                 if review_text and "(" in review_text:
@@ -177,13 +173,14 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                             "brand_english": brand_english,
                             "category": category_name,
                             "category_code": category_code,
-                            "original_price": original_price,
+                            "normal_price": original_price,
                             "sale_price": sale_price,
                             "discount_rate": discount_rate,
                             "price_text": price_text,  # 디버깅용
                             "image_url": image_url,
                             "review_count": review_count,
-                            "review_score": review_score
+                            "review_score": review_score,
+                            "is_sold_out": False
                         }
 
                         # 중복 제거 (URL로 체크)
@@ -196,7 +193,7 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                                 logger.info(f"=== {len(products)}번째 상품 ===")
                                 logger.info(f"상품명: {product_data['product_name']}")
                                 logger.info(f"브랜드: {product_data['brand']}")
-                                logger.info(f"원가격: {product_data['original_price']}원")
+                                logger.info(f"원가격: {product_data['normal_price']}원")
                                 logger.info(f"판매가: {product_data['sale_price']}원")
                                 logger.info(f"할인율: {product_data['discount_rate']}%")
                                 logger.info(f"가격 텍스트: {product_data['price_text']}")

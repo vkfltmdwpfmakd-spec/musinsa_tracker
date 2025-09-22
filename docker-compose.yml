@@ -8,8 +8,10 @@ services:
       - ./app:/code/app
     depends_on:
       - db
+    env_file:
+      - .env
     environment:
-      - DATABASE_URL=postgresql://user:password@db:5432/musinsa_db
+      - DATABASE_URL=${DATABASE_URL:-postgresql://user:password@db:5432/musinsa_db}
   db:
     image: postgres:14
     container_name: musinsa_db

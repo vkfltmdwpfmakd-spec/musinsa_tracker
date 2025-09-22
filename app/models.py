@@ -21,7 +21,6 @@ class Product(Base):
     brand = Column(String, comment='브랜드명')
     brand_english = Column(String, nullable=True, comment='브랜드 영문명')
     category = Column(String, comment='카테고리명 (상의, 하의 등)')
-    category_depth1 = Column(String, nullable=True, comment='카테고리 1단계')
     product_url = Column(String, unique=True, index=True, comment='상품 페이지 URL')
     image_url = Column(String, comment='상품 이미지 URL')
     review_count = Column(Integer, default=0, comment='리뷰 개수')
@@ -40,10 +39,9 @@ class PriceHistory(Base):
 
     id = Column(Integer, primary_key=True, index=True, comment='가격 이력 고유 ID')
     product_id = Column(Integer, ForeignKey("products.id"), comment='products 테이블의 id를 참조하는 외래 키')
-    price = Column(Float, comment='현재 판매가')
-    discount_price = Column(Float, comment='할인가 (현재는 판매가와 동일하게 저장)')
+    normal_price = Column(Float, comment='정상가 (정가)')
+    sale_price = Column(Float, comment='현재 판매가')
     discount_rate = Column(Float, comment='할인율 (%)')
-    stock_status = Column(String, comment='재고 상태 문자열 (예: 판매중, 품절)')
     is_sold_out = Column(Boolean, default=False, comment='품절 여부 (True/False)')
     crawled_at = Column(DateTime, default=lambda: datetime.now(KST).replace(tzinfo=None), comment='크롤링 실행 시간 (KST)')
 

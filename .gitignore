@@ -8,3 +8,8 @@ debug_category.html
 
 # Python 캐시
 __pycache__/
+
+# 테스트 임시 파일
+token_response.json
+*.token
+test_*.json

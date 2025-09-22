@@ -103,8 +103,7 @@ async def extract_data_from_script_tag(page) -> Optional[Dict[str, Any]]:
                             "sale_price": sale_price,
                             "discount_rate": discount_rate,
                             "is_sale": is_sale,
-                            "is_sold_out": is_sold_out,
-                            "stock_status": "품절" if is_sold_out else "판매중"
+                            "is_sold_out": is_sold_out
                         }
     except Exception as e:
         logger.warning(f"오류: Script 태그 JSON 파싱 중 문제가 발생했습니다: {e}")
@@ -146,11 +145,6 @@ async def fetch_product_data(url: str) -> Optional[Dict[str, Any]]:
             is_sold_out = json_data.get("is_sold_out", False)
             review_count = json_data.get("review_count", 0)
             review_score = json_data.get("review_score", 0.0)
-            stock_status = json_data.get("stock_status")
-
-            # 재고 상태가 없으면 is_sold_out으로 판단
-            if not stock_status:
-                stock_status = "품절" if is_sold_out else "판매중"
 
             await browser.close()
             logger.info("크롤링 완료")
@@ -169,9 +163,9 @@ async def fetch_product_data(url: str) -> Optional[Dict[str, Any]]:
                 "review_score": review_score,
                 "is_active": True,
                 # Price History 테이블용 필드들
+                "normal_price": normal_price,
                 "sale_price": sale_price,
                 "discount_rate": discount_rate,
-                "stock_status": stock_status,
                 "is_sold_out": is_sold_out
             }
             logger.info(f"크롤링 결과: {result}")
