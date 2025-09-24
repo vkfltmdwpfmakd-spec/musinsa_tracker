@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pytz
 from .database import SessionLocal
 from .crawler import fetch_product_data
-from .category_crawler import fetch_multiple_categories, MUSINSA_CATEGORIES
+from .category_crawler import fetch_multiple_categories, get_cached_categories
 from . import models
 
 # 로깅 설정
@@ -27,13 +27,17 @@ async def discover_new_products():
     """카테고리 크롤링으로 새로운 상품 자동 발견 및 등록"""
     db = SessionLocal()
     try:
-        # MUSINSA_CATEGORIES 활용 - 매번 다른 카테고리 조합으로 다양성 확보
-        all_categories = list(MUSINSA_CATEGORIES.values())
+        # 동적으로 카테고리 가져오기 - 매번 다른 카테고리 조합으로 다양성 확보
+        musinsa_categories = await get_cached_categories()
+        all_categories = list(musinsa_categories.values())
 
         # 전체 카테고리 중 3-4개를 랜덤 선택 (부하 분산 + 다양성)
         target_categories = random.sample(all_categories, min(4, len(all_categories)))
 
-        logger.info(f"선택된 카테고리: {target_categories}")
+        # 선택된 카테고리 이름도 로깅
+        selected_names = [name for name, code in musinsa_categories.items() if code in target_categories]
+
+        logger.info(f"선택된 카테고리: {selected_names} ({target_categories})")
 
         # services.py의 비즈니스 로직 재사용
         from .services import crawl_and_save_multiple_categories

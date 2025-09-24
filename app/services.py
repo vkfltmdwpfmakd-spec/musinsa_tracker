@@ -3,7 +3,7 @@ import logging
 from sqlalchemy.orm import Session
 from typing import List, Dict, Tuple
 from .crawler import fetch_product_data
-from .category_crawler import fetch_multiple_categories, MUSINSA_CATEGORIES
+from .category_crawler import fetch_multiple_categories, get_cached_categories
 from . import models
 
 # 로깅 설정
@@ -69,8 +69,9 @@ async def crawl_and_save_multiple_categories(
 ) -> Dict:
     """여러 카테고리 상품 크롤링 및 DB 저장"""
 
-    # 유효한 카테고리 코드 확인
-    invalid_codes = [code for code in category_codes if code not in MUSINSA_CATEGORIES.values()]
+    # 유효한 카테고리 코드 확인 (동적 카테고리 사용)
+    musinsa_categories = await get_cached_categories()
+    invalid_codes = [code for code in category_codes if code not in musinsa_categories.values()]
     if invalid_codes:
         raise ValueError(f"유효하지 않은 카테고리 코드입니다: {invalid_codes}")
 

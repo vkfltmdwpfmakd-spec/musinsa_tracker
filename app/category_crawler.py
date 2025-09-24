@@ -10,17 +10,137 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-MUSINSA_CATEGORIES = {
-    "상의": "001",
-    "아우터": "002",
-    "하의": "003",
-    "신발": "022",
-    "가방": "025",
-    "모자": "007",
-    "양말": "008",
-    "언더웨어": "009",
-    "악세서리": "010"
-}
+async def get_musinsa_categories():
+    """무신사 사이트에서 동적으로 카테고리 목록을 가져옴"""
+    from playwright.async_api import async_playwright
+    import re
+    import time
+
+    logger.info("무신사 카테고리 목록을 동적으로 가져오는 중...")
+
+    # 기본 카테고리 (확실히 작동하는 것들)
+    fallback_categories = {
+        "상의": "001",
+        "아우터": "002",
+        "하의": "003"
+    }
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            await page.set_extra_http_headers({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+
+            # 무신사 메인 페이지에서 카테고리 추출
+            await page.goto('https://www.musinsa.com', wait_until='domcontentloaded', timeout=10000)
+            await page.wait_for_timeout(3000)
+
+            discovered_categories = {}
+            all_links = await page.query_selector_all('a')
+
+            # 메인 카테고리 코드 추출 (주로 001-030, 100번대)
+            for link in all_links:
+                try:
+                    href = await link.get_attribute('href')
+                    text = await link.text_content()
+
+                    if href and text and '/category/' in href:
+                        # 카테고리 코드 추출 (001, 002, 103 등)
+                        match = re.search(r'/category/([0-9]{3})(?:[^0-9]|$)', href)
+                        if match:
+                            code = match.group(1)
+                            name = text.strip()
+
+                            # 유효한 카테고리명 필터링
+                            if (len(name) < 15 and
+                                name not in ['', '무신사', 'MUSINSA', '로그인', '회원가입', '전체 보기', '더보기'] and
+                                not re.search(r'[0-9]', name) and
+                                '/' not in name and
+                                code not in discovered_categories.values()):
+
+                                discovered_categories[name] = code
+
+                except:
+                    continue
+
+            await browser.close()
+
+            # 발견된 카테고리들 검증
+            logger.info(f"발견된 카테고리 후보: {len(discovered_categories)}개")
+
+            valid_categories = {}
+
+            # 검증 과정
+            async with async_playwright() as p2:
+                browser2 = await p2.chromium.launch(headless=True)
+                page2 = await browser2.new_page()
+
+                await page2.set_extra_http_headers({
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                })
+
+                # 최대 10개까지만 검증 (시간 단축)
+                test_items = list(discovered_categories.items())[:10]
+
+                for name, code in test_items:
+                    try:
+                        url = f'https://www.musinsa.com/category/{code}'
+                        await page2.goto(url, wait_until='domcontentloaded', timeout=6000)
+                        await page2.wait_for_timeout(1000)
+
+                        # 상품 링크 확인
+                        product_links = await page2.query_selector_all('a.gtm-select-item')
+
+                        if len(product_links) > 20:  # 20개 이상 상품이 있는 카테고리만
+                            valid_categories[name] = code
+                            logger.info(f"✅ {name} ({code}): {len(product_links)}개 상품")
+                        else:
+                            logger.debug(f"❌ {name} ({code}): {len(product_links)}개 상품 (부족)")
+
+                    except Exception as e:
+                        logger.debug(f"❌ {name} ({code}): 검증 실패")
+                        continue
+
+                await browser2.close()
+
+            # 결과 처리
+            if len(valid_categories) >= 3:
+                logger.info(f"동적으로 {len(valid_categories)}개 유효한 카테고리 발견")
+                return valid_categories
+            else:
+                logger.warning("유효한 카테고리 부족, fallback 카테고리 사용")
+                return fallback_categories
+
+    except Exception as e:
+        logger.error(f"카테고리 자동 발견 실패: {e}, fallback 카테고리 사용")
+        return fallback_categories
+
+
+# 캐시된 카테고리 (성능 최적화용)
+_cached_categories = None
+_cache_timestamp = None
+_cache_duration = 3600  # 1시간 캐시
+
+async def get_cached_categories():
+    """캐시된 카테고리를 반환하거나, 없으면 새로 가져옵니다."""
+    global _cached_categories, _cache_timestamp
+    import time
+
+    current_time = time.time()
+
+    # 캐시가 없거나 만료된 경우
+    if (_cached_categories is None or
+        _cache_timestamp is None or
+        current_time - _cache_timestamp > _cache_duration):
+
+        logger.info("카테고리 캐시 갱신 중...")
+        _cached_categories = await get_musinsa_categories()
+        _cache_timestamp = current_time
+
+    return _cached_categories
 
 
 def parse_price_from_text(price_text: str) -> tuple[int, int, float]:
@@ -63,6 +183,9 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
     products = []
     logger.info(f"카테고리 코드: {category_code} - 크롤링 시작 (목표: {target_count}개)")
 
+    # 동적으로 카테고리 목록 가져오기
+    musinsa_categories = await get_cached_categories()
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         page = await browser.new_page()
@@ -73,7 +196,7 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
         })
 
         try:
-            # 기본 카테고리 페이지 로드 
+            # 기본 카테고리 페이지 로드   https://www.musinsa.com/category/002?d_cat_cd=002&brand=&list_kind=small&sort=pop&gf=A
             url = f"https://www.musinsa.com/category/{category_code}?d_cat_cd={category_code}&brand=&list_kind=small&sort=pop"
             logger.info(f"카테고리 페이지 로드: {url}")
 
@@ -96,13 +219,18 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
             processed_urls = set()  # 중복 제거용
 
             while len(products) < target_count and scroll_count < max_scrolls:
-                # 현재 페이지의 모든 상품 링크 직접 수집
-                product_links = await page.query_selector_all("a.gtm-select-item")
-                logger.info(f"스크롤 {scroll_count}: {len(product_links)}개 상품 발견")
+                # 현재 페이지의 모든 상품 컨테이너 수집
+                product_containers = await page.query_selector_all("div.sc-itBLYH")
+                logger.info(f"스크롤 {scroll_count}: {len(product_containers)}개 상품 컨테이너 발견")
 
                 # 상품 정보 추출
-                for link_element in product_links:
+                for container in product_containers:
                     try:
+                        if not container:
+                            continue
+
+                        # 컨테이너 내에서 링크 요소 찾기
+                        link_element = await container.query_selector("a.gtm-select-item")
                         if not link_element:
                             continue
 
@@ -136,28 +264,41 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                         review_score = 0.0
 
                         try:
-                            # 리뷰 개수 (괄호 있는 요소)
-                            review_count_element = await link_element.query_selector("span.text-etc_11px_reg.text-yellow.font-pretendard")
-                            if review_count_element:
-                                review_text = await review_count_element.text_content()
-                                if review_text and "(" in review_text:
-                                    # "(1,234)" 형태에서 숫자 추출
-                                    import re
-                                    count_match = re.search(r'\(([0-9,]+)\)', review_text)
-                                    if count_match:
-                                        review_count = int(count_match.group(1).replace(',', ''))
-                                elif review_text and "(" not in review_text:
-                                    # 평점 (괄호 없는 요소)
+                            yellow_spans = await container.query_selector_all("span.text-etc_11px_reg.text-yellow.font-pretendard")
+
+                            for span in yellow_spans:
+                                span_text = await span.text_content()
+                                if not span_text:
+                                    continue
+
+                                span_text = span_text.strip()
+
+                                # 평점 추출 (예: "5.0", "4.5")
+                                if span_text.replace('.', '').replace(',', '').isdigit() and '.' in span_text:
                                     try:
-                                        review_score = float(review_text.strip())
-                                    except:
+                                        score = float(span_text.replace(',', ''))
+                                        if 0.0 <= score <= 5.0:
+                                            review_score = score
+                                            logger.info(f"평점 발견: {score}")
+                                    except ValueError:
                                         pass
+
+                                # 리뷰 개수 추출 (예: "(1)", "(123)")
+                                elif span_text.startswith('(') and span_text.endswith(')'):
+                                    try:
+                                        count_str = span_text[1:-1]  # 괄호 제거
+                                        if count_str.replace(',', '').isdigit():
+                                            review_count = int(count_str.replace(',', ''))
+                                            logger.info(f"리뷰 개수 발견: {review_count}")
+                                    except ValueError:
+                                        pass
+
                         except Exception as e:
                             logger.debug(f"리뷰 정보 추출 실패: {e}")
 
-                        # 카테고리명 추가
+                        # 카테고리명 추가 (동적으로 가져온 카테고리 사용)
                         category_name = None
-                        for name, code in MUSINSA_CATEGORIES.items():
+                        for name, code in musinsa_categories.items():
                             if code == category_code:
                                 category_name = name
                                 break
@@ -196,6 +337,8 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                                 logger.info(f"원가격: {product_data['normal_price']}원")
                                 logger.info(f"판매가: {product_data['sale_price']}원")
                                 logger.info(f"할인율: {product_data['discount_rate']}%")
+                                logger.info(f"리뷰 개수: {product_data['review_count']}개")
+                                logger.info(f"리뷰 평점: {product_data['review_score']}")
                                 logger.info(f"가격 텍스트: {product_data['price_text']}")
                                 logger.info(f"상품 URL: {product_data['product_url']}")
                                 logger.info(f"이미지 URL: {product_data['image_url']}")

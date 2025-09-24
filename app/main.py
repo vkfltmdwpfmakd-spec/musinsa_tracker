@@ -11,7 +11,7 @@ from .services import (
     update_product_prices,
     manual_crawl_product
 )
-from .category_crawler import MUSINSA_CATEGORIES
+from .category_crawler import get_cached_categories
 from . import models, schema
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
@@ -183,10 +183,11 @@ async def crawl_multiple_categories_endpoint(
 
 @app.get("/categories")
 async def get_categories():
-    """지원하는 카테고리 목록 조회"""
+    """지원하는 카테고리 목록 조회 (동적)"""
+    categories = await get_cached_categories()
     return {
-        "categories": MUSINSA_CATEGORIES,
-        "total_count": len(MUSINSA_CATEGORIES)
+        "categories": categories,
+        "total_count": len(categories)
     }
 
 
