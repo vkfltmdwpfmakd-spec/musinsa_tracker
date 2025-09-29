@@ -10,6 +10,9 @@ python-jose[cryptography]
 passlib[bcrypt]
 apscheduler
 slowapi
+prometheus-client==0.21.0
+prometheus-fastapi-instrumentator==7.0.0
+psutil==6.0.0
 
 # 라이브러리 설명
 # FastAPI: 파이썬으로 API 서버를 웹 프레임워크
@@ -24,3 +27,6 @@ slowapi
 # passlib: 패스워드 해싱 및 검증 라이브러리
 # apscheduler: 스케줄링 작업(크론잡)을 위한 라이브러리
 # slowapi: FastAPI용 Rate Limiting(요청 제한) 라이브러리
+# prometheus-client: Prometheus 메트릭 수집 클라이언트 라이브러리
+# prometheus-fastapi-instrumentator: FastAPI용 자동 메트릭 수집 라이브러리
+# psutil: 시스템 모니터링(CPU, 메모리, 디스크 사용률) 라이브러리

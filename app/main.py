@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import timedelta
@@ -16,9 +16,14 @@ from . import models, schema
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from prometheus_fastapi_instrumentator import Instrumentator
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+from .monitoring import update_system_metrics, update_database_metrics
+import asyncio
+import logging
 
-
-
+# 로깅 설정
+logger = logging.getLogger(__name__)
 
 models.Base.metadata.create_all(bind=engine)
 
@@ -211,3 +216,43 @@ async def get_price_history(product_id: int, db: Session = Depends(get_db)):
     return price_history
 
 
+# Prometheus 계측
+instrumentator = Instrumentator(
+    should_group_status_codes=False,
+    should_ignore_untemplated=True,
+    should_respect_env_var=True,
+    should_instrument_requests_inprogress=True,
+    excluded_handlers=[".*admin.*", "/metrics"],
+    env_var_name="ENABLE_METRICS",
+    inprogress_name="inprogress",
+    inprogress_labels=True,
+)
+instrumentator.instrument(app)
+
+# 시스템 메트릭 업데이트 백그라운드 태스크
+async def update_metrics_background():
+    while True:
+        try:
+            update_system_metrics()
+            # DB 메트릭도 업데이트
+            db = next(get_db())
+            update_database_metrics(db)
+            db.close()
+        except Exception as e:
+            logger.error(f"메트릭 업데이트 실패: {e}")
+
+        await asyncio.sleep(30)  # 30초마다 업데이트
+
+# 앱 시작 시 백그라운드 태스크 시작
+@app.on_event("startup")
+async def startup_event():
+    start_scheduler()
+    instrumentator.expose(app)
+    # 백그라운드 메트릭 업데이트 시작
+    asyncio.create_task(update_metrics_background())
+
+# 메트릭 엔드포인트 (수동 확인용)
+@app.get("/metrics", include_in_schema=False)
+async def get_metrics():
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)

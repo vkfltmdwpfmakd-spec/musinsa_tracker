@@ -5,6 +5,7 @@ from typing import List, Dict, Tuple
 from .crawler import fetch_product_data
 from .category_crawler import fetch_multiple_categories, get_cached_categories
 from . import models
+from .monitoring import track_crawling_metrics
 
 # 로깅 설정
 logger = logging.getLogger(__name__)
@@ -60,7 +61,7 @@ async def create_product_from_url(product_url: str, db: Session) -> models.Produ
 
     return db_product
 
-
+@track_crawling_metrics("multiple")
 async def crawl_and_save_multiple_categories(
     category_codes: List[str],
     target_count: int = 300,
