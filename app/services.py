@@ -3,7 +3,7 @@ import logging
 from sqlalchemy.orm import Session
 from typing import List, Dict, Tuple
 from .crawler import fetch_product_data
-from .category_crawler import fetch_multiple_categories, get_cached_categories
+from .category_crawler import fetch_multiple_categories, get_cached_categories, get_all_categories_with_subcategories
 from . import models
 from .monitoring import track_crawling_metrics
 
@@ -35,6 +35,12 @@ async def create_product_from_url(product_url: str, db: Session) -> models.Produ
         'brand': crawled_data['brand'],
         'brand_english': crawled_data.get('brand_english'),
         'category': crawled_data.get('category'),
+        'category_depth1': crawled_data.get('category_depth1'),
+        'category_depth1_code': crawled_data.get('category_depth1_code'),
+        'category_depth2': crawled_data.get('category_depth2'),
+        'category_depth2_code': crawled_data.get('category_depth2_code'),
+        'category_depth3': crawled_data.get('category_depth3'),
+        'category_depth3_code': crawled_data.get('category_depth3_code'),
         'product_url': crawled_data['product_url'],
         'image_url': crawled_data['image_url'],
         'review_count': crawled_data.get('review_count', 0),
@@ -70,9 +76,9 @@ async def crawl_and_save_multiple_categories(
 ) -> Dict:
     """여러 카테고리 상품 크롤링 및 DB 저장"""
 
-    # 유효한 카테고리 코드 확인 (동적 카테고리 사용)
-    musinsa_categories = await get_cached_categories()
-    invalid_codes = [code for code in category_codes if code not in musinsa_categories.values()]
+    # 유효한 카테고리 코드 확인 (주요 + 세부 카테고리 모두 포함)
+    all_categories = await get_all_categories_with_subcategories()
+    invalid_codes = [code for code in category_codes if code not in all_categories.values()]
     if invalid_codes:
         raise ValueError(f"유효하지 않은 카테고리 코드입니다: {invalid_codes}")
 
@@ -114,6 +120,12 @@ async def crawl_and_save_multiple_categories(
                         'brand': product_info.get('brand'),
                         'brand_english': product_info.get('brand_english'),
                         'category': product_info.get('category'),
+                        'category_depth1': product_info.get('category_depth1'),
+                        'category_depth1_code': product_info.get('category_depth1_code'),
+                        'category_depth2': product_info.get('category_depth2'),
+                        'category_depth2_code': product_info.get('category_depth2_code'),
+                        'category_depth3': product_info.get('category_depth3'),
+                        'category_depth3_code': product_info.get('category_depth3_code'),
                         'product_url': product_url,
                         'image_url': product_info.get('image_url'),
                         'review_count': product_info.get('review_count', 0),

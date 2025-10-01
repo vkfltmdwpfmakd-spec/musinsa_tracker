@@ -41,15 +41,7 @@ limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# 앱 시작 시 스케줄러 시작
-@app.on_event("startup")
-async def startup_event():
-    start_scheduler()
-
-# 앱 종료 시 스케줄러 중지
-@app.on_event("shutdown")
-async def shutdown_event():
-    stop_scheduler()
+# 이 startup_event는 아래 254줄의 통합된 startup_event로 대체됨
 
 
 @app.get("/")
@@ -250,13 +242,18 @@ async def update_metrics_background():
 
         await asyncio.sleep(30)  # 30초마다 업데이트
 
-# 앱 시작 시 백그라운드 태스크 시작
+# 앱 시작 시 모든 백그라운드 서비스 시작
 @app.on_event("startup")
 async def startup_event():
     start_scheduler()
     instrumentator.expose(app)
     # 백그라운드 메트릭 업데이트 시작
     asyncio.create_task(update_metrics_background())
+
+# 앱 종료 시 스케줄러 중지
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_scheduler()
 
 # 메트릭 엔드포인트 (수동 확인용)
 @app.get("/metrics", include_in_schema=False)

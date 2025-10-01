@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import pytz
 from .database import SessionLocal
 from .crawler import fetch_product_data
-from .category_crawler import fetch_multiple_categories, get_cached_categories
+from .category_crawler import fetch_multiple_categories, get_cached_categories, get_all_categories_with_subcategories
 from . import models
 
 # 로깅 설정
@@ -24,27 +24,51 @@ scheduler = AsyncIOScheduler(timezone=KST)
 
 
 async def discover_new_products():
-    """카테고리 크롤링으로 새로운 상품 자동 발견 및 등록"""
+    """카테고리 크롤링으로 새로운 상품 자동 발견 및 등록 (세부 카테고리 포함)"""
     db = SessionLocal()
     try:
-        # 동적으로 카테고리 가져오기 - 매번 다른 카테고리 조합으로 다양성 확보
-        musinsa_categories = await get_cached_categories()
-        all_categories = list(musinsa_categories.values())
+        # 주요 + 세부 카테고리 모두 가져오기 (138개)
+        all_categories_dict = await get_all_categories_with_subcategories()
 
-        # 전체 카테고리 중 3-4개를 랜덤 선택 (부하 분산 + 다양성)
-        target_categories = random.sample(all_categories, min(4, len(all_categories)))
+        # 주요 카테고리와 세부 카테고리 분리
+        main_categories = {}
+        sub_categories = {}
 
-        # 선택된 카테고리 이름도 로깅
-        selected_names = [name for name, code in musinsa_categories.items() if code in target_categories]
+        for name, code in all_categories_dict.items():
+            if '|' in name:
+                sub_categories[name] = code
+            else:
+                main_categories[name] = code
 
-        logger.info(f"선택된 카테고리: {selected_names} ({target_categories})")
+        logger.info(f"사용 가능한 카테고리: 주요 {len(main_categories)}개, 세부 {len(sub_categories)}개")
+
+        # 전략적 카테고리 선택 (5-6개)
+        selected_categories = {}
+
+        # 1) 주요 카테고리에서 2-3개 선택 (안정성)
+        main_sample_count = min(3, len(main_categories))
+        if main_sample_count > 0:
+            main_selected = random.sample(list(main_categories.items()), main_sample_count)
+            selected_categories.update(main_selected)
+
+        # 2) 세부 카테고리에서 2-3개 선택 (다양성)
+        sub_sample_count = min(3, len(sub_categories))
+        if sub_sample_count > 0:
+            sub_selected = random.sample(list(sub_categories.items()), sub_sample_count)
+            selected_categories.update(sub_selected)
+
+        target_categories = list(selected_categories.values())
+        selected_names = list(selected_categories.keys())
+
+        logger.info(f"선택된 카테고리 ({len(target_categories)}개): {selected_names}")
+        logger.info(f"카테고리 코드: {target_categories}")
 
         # services.py의 비즈니스 로직 재사용
         from .services import crawl_and_save_multiple_categories
 
         result = await crawl_and_save_multiple_categories(
             category_codes=target_categories,
-            target_count=15,  # 카테고리당 15개씩
+            target_count=20,  # 카테고리당 20개씩 (세부 카테고리 포함으로 증가)
             save_to_db=True,
             db=db
         )
@@ -101,6 +125,16 @@ async def cleanup_old_price_history():
 def start_scheduler():
     """스케줄러 시작"""
     try:
+        # 이미 실행 중인지 확인
+        if scheduler.running:
+            logger.warning("스케줄러가 이미 실행 중입니다. 재시작을 건너뜁니다.")
+            return
+
+        # 기존 작업이 있다면 제거
+        if scheduler.get_jobs():
+            logger.info("기존 작업들을 제거합니다.")
+            scheduler.remove_all_jobs()
+
         # 1시간마다 기존 상품 가격 업데이트
         scheduler.add_job(
             crawl_all_active_products,
@@ -110,12 +144,12 @@ def start_scheduler():
             replace_existing=True
         )
 
-        # 6시간마다 새로운 상품 발견 (랜덤 카테고리로 다양성 확보)
+        # 4시간마다 새로운 상품 발견 (주요+세부 카테고리 혼합)
         scheduler.add_job(
             discover_new_products,
-            trigger=IntervalTrigger(hours=6),
+            trigger=IntervalTrigger(hours=4),
             id='discover_new_products',
-            name='6시간마다 신규 상품 자동 발견 (랜덤 카테고리)',
+            name='4시간마다 신규 상품 자동 발견 (주요+세부 카테고리 혼합)',
             replace_existing=True
         )
 
@@ -130,7 +164,7 @@ def start_scheduler():
 
         # 스케줄러 시작
         scheduler.start()
-        logger.info("스케줄러가 시작되었습니다")
+        logger.info("스케줄러가 정상적으로 시작되었습니다")
 
         # 등록된 작업 목록 출력
         for job in scheduler.get_jobs():
@@ -173,6 +207,7 @@ def get_scheduler_status():
         return {
             "running": False,
             "jobs": [],
+            "job_count": 0,
             "error": str(e)
         }
 

@@ -10,6 +10,60 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+async def get_detailed_categories_from_page(category_code: str, category_name: str) -> Dict[str, str]:
+    """특정 카테고리 페이지에서 세부 카테고리들을 수집"""
+    detailed_categories = {}
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(headless=True)
+            page = await browser.new_page()
+
+            await page.set_extra_http_headers({
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            })
+
+            # 카테고리 페이지로 이동
+            url = f'https://www.musinsa.com/category/{category_code}?gf=A'
+            logger.info(f"세부 카테고리 수집 중: {category_name} ({url})")
+
+            await page.goto(url, wait_until='domcontentloaded', timeout=10000)
+            await page.wait_for_timeout(2000)
+
+            # 세부 카테고리 탭들 찾기
+            # data-button-name="카테고리_2depth" 속성을 가진 span 요소들 찾기
+            subcategory_items = await page.query_selector_all('span.gtm-click-button[data-button-name="카테고리_2depth"]')
+
+            logger.info(f"{category_name}에서 {len(subcategory_items)}개의 세부 카테고리 후보 발견")
+
+            for item in subcategory_items:
+                try:
+                    category_id = await item.get_attribute('data-category-id')
+                    category_full_name = await item.get_attribute('data-category-name')
+
+                    if category_id and category_full_name:
+                        # "뷰티|베이스메이크업" 형태에서 세부 카테고리명만 추출
+                        if '|' in category_full_name:
+                            parts = category_full_name.split('|')
+                            if len(parts) >= 2:
+                                subcategory_name = parts[1].strip()
+                                # "전체"는 제외
+                                if subcategory_name != "전체":
+                                    detailed_categories[f"{category_name}|{subcategory_name}"] = category_id
+                                    logger.debug(f"  └ {subcategory_name} ({category_id})")
+
+                except Exception as e:
+                    logger.debug(f"세부 카테고리 처리 오류: {e}")
+                    continue
+
+            await browser.close()
+
+    except Exception as e:
+        logger.warning(f"{category_name} 카테고리 페이지에서 세부 카테고리 수집 실패: {e}")
+
+    return detailed_categories
+
+
 async def get_musinsa_categories():
     """무신사 사이트에서 동적으로 카테고리 목록을 가져옴"""
     from playwright.async_api import async_playwright
@@ -34,37 +88,66 @@ async def get_musinsa_categories():
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
             })
 
-            # 무신사 메인 페이지에서 카테고리 추출
+            # 무신사 메인 페이지에서 카테고리 메뉴 클릭하여 카테고리 추출
             await page.goto('https://www.musinsa.com', wait_until='domcontentloaded', timeout=10000)
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
 
             discovered_categories = {}
-            all_links = await page.query_selector_all('a')
 
-            # 메인 카테고리 코드 추출 (주로 001-030, 100번대)
-            for link in all_links:
-                try:
-                    href = await link.get_attribute('href')
-                    text = await link.text_content()
+            try:
+                # 카테고리 메뉴 버튼 클릭
+                category_button = await page.query_selector('button.gtm-click-button[data-button-id="category_menu"]')
+                if category_button:
+                    await category_button.click()
+                    await page.wait_for_timeout(2000)  # 메뉴 로드 대기
 
-                    if href and text and '/category/' in href:
-                        # 카테고리 코드 추출 (001, 002, 103 등)
-                        match = re.search(r'/category/([0-9]{3})(?:[^0-9]|$)', href)
-                        if match:
-                            code = match.group(1)
-                            name = text.strip()
+                    # 카테고리 메뉴에서 카테고리 정보 추출
+                    category_items = await page.query_selector_all('p.gtm-click-button[data-button-name="카테고리_1depth"]')
 
-                            # 유효한 카테고리명 필터링
-                            if (len(name) < 15 and
-                                name not in ['', '무신사', 'MUSINSA', '로그인', '회원가입', '전체 보기', '더보기'] and
-                                not re.search(r'[0-9]', name) and
-                                '/' not in name and
-                                code not in discovered_categories.values()):
+                    for item in category_items:
+                        try:
+                            category_id = await item.get_attribute('data-category-id')
+                            category_name = await item.get_attribute('data-category-name')
 
-                                discovered_categories[name] = code
+                            if category_id and category_name:
+                                # 3자리 코드로 변환 (예: 1 -> 001)
+                                code = category_id.zfill(3)
+                                name = category_name.strip()
 
-                except:
-                    continue
+                                # 특정 카테고리 제외 (아울렛, 부티크 등은 일반 상품이 아닐 수 있음)
+                                excluded_categories = ['아울렛', '부티크', '유즈드', '어스']
+                                if name not in excluded_categories:
+                                    discovered_categories[name] = code
+
+                        except Exception as e:
+                            logger.debug(f"카테고리 항목 처리 오류: {e}")
+                            continue
+
+                else:
+                    logger.warning("카테고리 메뉴 버튼을 찾을 수 없음")
+
+            except Exception as e:
+                logger.warning(f"카테고리 메뉴 클릭 실패: {e}")
+                # 기존 방식으로 폴백
+                all_links = await page.query_selector_all('a')
+                for link in all_links:
+                    try:
+                        href = await link.get_attribute('href')
+                        text = await link.text_content()
+
+                        if href and text and '/category/' in href:
+                            match = re.search(r'/category/([0-9]{3})(?:[^0-9]|$)', href)
+                            if match:
+                                code = match.group(1)
+                                name = text.strip()
+                                if (len(name) < 15 and
+                                    name not in ['', '무신사', 'MUSINSA', '로그인', '회원가입', '전체 보기', '더보기'] and
+                                    not re.search(r'[0-9]', name) and
+                                    '/' not in name and
+                                    code not in discovered_categories.values()):
+                                    discovered_categories[name] = code
+                    except:
+                        continue
 
             await browser.close()
 
@@ -82,8 +165,8 @@ async def get_musinsa_categories():
                     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
                 })
 
-                # 최대 10개까지만 검증 (시간 단축)
-                test_items = list(discovered_categories.items())[:10]
+                # 더 많은 카테고리 검증 (최대 15개)
+                test_items = list(discovered_categories.items())[:15]
 
                 for name, code in test_items:
                     try:
@@ -94,7 +177,7 @@ async def get_musinsa_categories():
                         # 상품 링크 확인
                         product_links = await page2.query_selector_all('a.gtm-select-item')
 
-                        if len(product_links) > 20:  # 20개 이상 상품이 있는 카테고리만
+                        if len(product_links) > 10:  # 10개 이상 상품이 있는 카테고리만 (조건 완화)
                             valid_categories[name] = code
                             logger.info(f"✅ {name} ({code}): {len(product_links)}개 상품")
                         else:
@@ -106,12 +189,19 @@ async def get_musinsa_categories():
 
                 await browser2.close()
 
-            # 결과 처리
-            if len(valid_categories) >= 3:
+            # 결과 처리 - 조건 완화
+            if len(valid_categories) >= 1:  # 1개 이상이면 발견된 카테고리 사용
                 logger.info(f"동적으로 {len(valid_categories)}개 유효한 카테고리 발견")
+                # 발견된 카테고리가 적으면 fallback과 병합
+                if len(valid_categories) < 5:
+                    # 중복되지 않는 fallback 카테고리 추가
+                    for name, code in fallback_categories.items():
+                        if code not in valid_categories.values():
+                            valid_categories[name] = code
+                    logger.info(f"fallback 카테고리 추가하여 총 {len(valid_categories)}개 카테고리 사용")
                 return valid_categories
             else:
-                logger.warning("유효한 카테고리 부족, fallback 카테고리 사용")
+                logger.warning("유효한 카테고리 없음, fallback 카테고리만 사용")
                 return fallback_categories
 
     except Exception as e:
@@ -183,8 +273,8 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
     products = []
     logger.info(f"카테고리 코드: {category_code} - 크롤링 시작 (목표: {target_count}개)")
 
-    # 동적으로 카테고리 목록 가져오기
-    musinsa_categories = await get_cached_categories()
+    # 모든 카테고리 (1단계 + 2단계) 가져오기
+    musinsa_categories = await get_all_categories_with_subcategories()
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
@@ -296,11 +386,37 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                         except Exception as e:
                             logger.debug(f"리뷰 정보 추출 실패: {e}")
 
-                        # 카테고리명 추가 (동적으로 가져온 카테고리 사용)
+                        # 카테고리명 추가 (세부 카테고리 정보 포함)
                         category_name = None
+                        category_depth1 = ""
+                        category_depth1_code = ""
+                        category_depth2 = ""
+                        category_depth2_code = ""
+                        category_depth3 = ""
+                        category_depth3_code = ""
+
+                        # 현재 카테고리 코드에 해당하는 카테고리 정보 찾기
                         for name, code in musinsa_categories.items():
                             if code == category_code:
                                 category_name = name
+
+                                # 세부 카테고리인 경우 (이름에 |가 포함된 경우)
+                                if '|' in name:
+                                    parts = name.split('|')
+                                    if len(parts) >= 2:
+                                        category_depth1 = parts[0].strip()
+                                        category_depth2 = parts[1].strip()
+                                        # 세부 카테고리의 경우 코드를 depth2_code로 사용
+                                        category_depth2_code = category_code
+                                        # depth1_code는 부모 카테고리에서 찾기
+                                        for parent_name, parent_code in musinsa_categories.items():
+                                            if parent_name == category_depth1 and '|' not in parent_name:
+                                                category_depth1_code = parent_code
+                                                break
+                                else:
+                                    # 1단계 카테고리인 경우
+                                    category_depth1 = name
+                                    category_depth1_code = category_code
                                 break
 
                         # 디버깅용 가격 텍스트
@@ -313,7 +429,12 @@ async def fetch_category_products(category_code: str, target_count: int = 300) -
                             "brand": brand,
                             "brand_english": brand_english,
                             "category": category_name,
-                            "category_code": category_code,
+                            "category_depth1": category_depth1,
+                            "category_depth1_code": category_depth1_code,
+                            "category_depth2": category_depth2,
+                            "category_depth2_code": category_depth2_code,
+                            "category_depth3": category_depth3,
+                            "category_depth3_code": category_depth3_code,
                             "normal_price": original_price,
                             "sale_price": sale_price,
                             "discount_rate": discount_rate,
@@ -392,15 +513,47 @@ async def fetch_multiple_categories(categories: List[str], target_count: int = 3
 
 
 
+async def get_all_categories_with_subcategories() -> Dict[str, str]:
+    """1단계 및 2단계 카테고리를 모두 수집하는 종합 함수"""
+    all_categories = {}
+
+    # 1. 먼저 주요 카테고리들 수집
+    main_categories = await get_musinsa_categories()
+    logger.info(f"주요 카테고리 {len(main_categories)}개 발견: {list(main_categories.keys())}")
+
+    # 2. 주요 카테고리들을 결과에 추가
+    all_categories.update(main_categories)
+
+    # 3. 각 주요 카테고리의 세부 카테고리들 수집
+    detailed_count = 0
+    for category_name, category_code in main_categories.items():
+        try:
+            detailed_categories = await get_detailed_categories_from_page(category_code, category_name)
+            if detailed_categories:
+                all_categories.update(detailed_categories)
+                detailed_count += len(detailed_categories)
+                logger.info(f"  └ {category_name}에서 {len(detailed_categories)}개 세부 카테고리 추가")
+
+            # 각 카테고리 사이에 딜레이 추가 (서버 부하 방지)
+            await asyncio.sleep(1)
+
+        except Exception as e:
+            logger.warning(f"{category_name} 세부 카테고리 수집 실패: {e}")
+            continue
+
+    logger.info(f"카테고리 수집 완료: 주요 {len(main_categories)}개 + 세부 {detailed_count}개 = 총 {len(all_categories)}개")
+    return all_categories
+
+
 if __name__ == "__main__":
-    # 테스트용으로 소량 수집
-    test_products = asyncio.run(fetch_category_products("002", target_count=10))
+    # 테스트: 세부 카테고리까지 모두 수집
+    print("=== 세부 카테고리 수집 테스트 ===")
+    all_cats = asyncio.run(get_all_categories_with_subcategories())
 
-    print(f"\n수집된 상품 수 : {len(test_products)}개")
-
-    for i,product in enumerate(test_products[:10]):
-        print(f"{i+1}. {product['product_name']}")
-        print(f"    URL: {product['product_url']}")
-        print(f"   브랜드: {product['brand']}")
-        print(f"   가격: {product['price_text']}")
+    print(f"\n총 {len(all_cats)}개 카테고리 발견:")
+    for name, code in sorted(all_cats.items()):
+        if "|" in name:
+            print(f"  └ {name} ({code})")  # 세부 카테고리
+        else:
+            print(f"{name} ({code})")  # 주요 카테고리
 
