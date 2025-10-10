@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends, Request, Response
 from sqlalchemy.orm import Session
 from typing import List
-from datetime import timedelta
+from datetime import datetime, timedelta
 from .database import engine, get_db
 from .auth import get_current_user, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from .scheduler import start_scheduler, stop_scheduler, get_scheduler_status
@@ -40,8 +40,6 @@ app = FastAPI(title="무신사 가격 트래커 API", version="1.0.0")
 limiter = Limiter(key_func=get_remote_address)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
-
-# 이 startup_event는 아래 254줄의 통합된 startup_event로 대체됨
 
 
 @app.get("/")
@@ -417,3 +415,140 @@ async def get_trending_products(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"트렌딩 상품 조회 실패: {str(e)}")
+
+
+# =============================================================================
+# 머신러닝 API 엔드포인트들
+# =============================================================================
+
+@app.post("/ml/train")
+async def train_price_model(db: Session = Depends(get_db)):
+    """가격 예측 모델 학습"""
+    try:
+        from .ml_models import price_model
+
+        metrics = price_model.train(db)
+
+        # 모델 저장
+        model_path = "models/price_prediction_model.joblib"
+        price_model.save_model(model_path)
+
+        return {
+            "message": "모델 학습 완료",
+            "metrics": metrics,
+            "model_path": model_path
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"모델 학습 실패: {str(e)}")
+
+
+@app.post("/ml/predict-price")
+async def predict_price(
+    brand: str,
+    category: str,
+    category_depth1: str,
+    review_count: int = 0,
+    review_score: float = 4.0,
+    normal_price: float = 50000
+):
+    """상품 가격 예측"""
+    try:
+        from .ml_models import price_model
+
+        if not price_model.is_trained:
+            raise HTTPException(
+                status_code=400,
+                detail="모델이 학습되지 않았습니다. /ml/train을 먼저 실행하세요."
+            )
+
+        product_data = {
+            "brand": brand,
+            "category": category,
+            "category_depth1": category_depth1,
+            "review_count": review_count,
+            "review_score": review_score,
+            "normal_price": normal_price
+        }
+
+        predicted_price = price_model.predict(product_data)
+
+        return {
+            "predicted_price": round(predicted_price, 0),
+            "input_data": product_data,
+            "discount_estimate": round((normal_price - predicted_price) / normal_price * 100, 1) if normal_price > predicted_price else 0
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"가격 예측 실패: {str(e)}")
+
+
+@app.get("/ml/feature-importance")
+async def get_feature_importance():
+    """모델 특성 중요도 조회"""
+    try:
+        from .ml_models import price_model
+
+        if not price_model.is_trained:
+            raise HTTPException(
+                status_code=400,
+                detail="모델이 학습되지 않았습니다. /ml/train을 먼저 실행하세요."
+            )
+
+        importance = price_model.get_feature_importance()
+
+        return {
+            "feature_importance": importance,
+            "description": {
+                "brand_encoded": "브랜드 영향도",
+                "category_encoded": "카테고리 영향도",
+                "category_depth1_encoded": "대분류 카테고리 영향도",
+                "review_count": "리뷰 수 영향도",
+                "review_score": "리뷰 점수 영향도",
+                "normal_price": "정가 영향도"
+            }
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"특성 중요도 조회 실패: {str(e)}")
+
+
+@app.get("/ml/discount-analysis")
+async def analyze_discount_patterns(db: Session = Depends(get_db)):
+    """할인 패턴 분석"""
+    try:
+        from .ml_models import discount_analyzer
+
+        analysis = discount_analyzer.analyze_discount_patterns(db)
+
+        return {
+            "discount_analysis": analysis,
+            "insights": {
+                "high_discount_threshold": 50,
+                "analysis_date": datetime.now().isoformat()
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"할인 패턴 분석 실패: {str(e)}")
+
+
+@app.get("/ml/model-status")
+async def get_model_status():
+    """머신러닝 모델 상태 조회"""
+    try:
+        from .ml_models import price_model, discount_analyzer
+
+        return {
+            "price_prediction_model": {
+                "is_trained": price_model.is_trained,
+                "model_type": "RandomForestRegressor",
+                "features": price_model.feature_columns if price_model.is_trained else []
+            },
+            "discount_analyzer": {
+                "is_trained": discount_analyzer.is_trained,
+                "model_type": "PatternAnalyzer"
+            }
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"모델 상태 조회 실패: {str(e)}")
